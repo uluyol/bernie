@@ -1,0 +1,3 @@
+package: github.com/uluyol/bernie/cmd
+import:
+- package: github.com/yhat/wsutil
