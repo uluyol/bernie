@@ -1,6 +1,0 @@
-hash: ff63cd8998f6e59db8ea85b92cdc7e5cc763e4374b9e22ad2898125b3adbcad0
-updated: 2016-05-25T11:08:21.652351196-04:00
-imports:
-- name: github.com/yhat/wsutil
-  version: 666b94ea38f279dc3ac060200f708ec2d39abdce
-devImports: []
