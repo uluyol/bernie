@@ -9,12 +9,15 @@ package bernie
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,8 +59,9 @@ func (s *responsiveSleeper) Sleep() {
 type WorkerStatus struct {
 	RunningTask *Task
 	FailedTasks int
-	Initialized bool
 	InitTask    *Task
+	Initialized bool
+	Killed      bool
 }
 
 func (s WorkerStatus) IsFree() bool {
@@ -92,9 +96,21 @@ type Worker struct {
 	log      Logger
 	name     string
 	manifest string
-	mu       sync.Mutex
-	status   WorkerStatus
-	initMu   sync.Mutex
+
+	mu     sync.Mutex
+	status WorkerStatus
+
+	initMu sync.Mutex
+}
+
+func (w *Worker) Kill(ctx context.Context) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.status.Killed = true
+	t := w.status.RunningTask
+	if t != nil {
+		t.Kill(ctx, true)
+	}
 }
 
 func (w *Worker) Status() WorkerStatus {
@@ -149,6 +165,9 @@ func (w *Worker) init(t *Task) {
 	w.log.Debugf("updated status")
 }
 
+var errWorkerKilled = errors.New("worker killed")
+var errTaskKilled = errors.New("task killed")
+
 func (w *Worker) Run(t *Task) {
 	w.log.Debugf("setup run env")
 	wdir, setupFine := w.setupRun(t)
@@ -185,7 +204,11 @@ func (w *Worker) Run(t *Task) {
 		Cur: 125 * time.Millisecond,
 	}
 	for {
-		w.log.Debugf("sleeping")
+		if st := t.Status(); st.Killed || st.Err == errTaskKilled {
+			retErr = errTaskKilled
+			break
+		}
+
 		if _, err := os.Stat(filepath.Join(wdir, "done")); !os.IsNotExist(err) {
 			if err == nil {
 				b, err := ioutil.ReadFile(filepath.Join(wdir, "done"))
@@ -204,11 +227,23 @@ func (w *Worker) Run(t *Task) {
 			w.log.Errorf("error not nil or NotExist for done file: %s: %v", t.Name, err)
 			break
 		}
+
+		w.mu.Lock()
+		wkilled := w.status.Killed
+		w.mu.Unlock()
+		if wkilled {
+			retErr = errWorkerKilled
+			break
+		}
+
 		sleeper.Sleep()
 	}
 	st = t.Status()
 	st.Done = true
 	st.Err = retErr
+	if st.Err == errWorkerKilled {
+		st.Tries--
+	}
 	t.setStatus(st)
 
 	if err := os.RemoveAll(wdir); err != nil {
@@ -218,7 +253,7 @@ func (w *Worker) Run(t *Task) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.status.RunningTask = nil
-	if err != nil {
+	if err != nil && err != errTaskKilled {
 		w.status.FailedTasks++
 	}
 }
@@ -228,6 +263,10 @@ func (w *Worker) setupRun(t *Task) (wdir string, ok bool) {
 	defer w.mu.Unlock()
 	if w.status.RunningTask != nil {
 		// already running something
+		return "", false
+	}
+	if w.status.Killed {
+		panic("trying to run on killed node")
 		return "", false
 	}
 
@@ -293,6 +332,7 @@ func listPushTail(list *taskNode, t *Task) {
 }
 
 type WorkerPool struct {
+	log               Logger
 	maxTaskTries      int
 	maxWorkerFailures int
 
@@ -303,8 +343,9 @@ type WorkerPool struct {
 	free     []*Worker
 }
 
-func NewWorkerPool(maxFailures, maxTries int, initTask *Task) *WorkerPool {
+func NewWorkerPool(log Logger, maxFailures, maxTries int, initTask *Task) *WorkerPool {
 	p := &WorkerPool{
+		log:               log,
 		maxTaskTries:      maxTries,
 		maxWorkerFailures: maxFailures,
 		initTask:          initTask,
@@ -320,10 +361,35 @@ func (p *WorkerPool) AllowableWorkerFailures() int {
 	return p.maxWorkerFailures
 }
 
-func (p *WorkerPool) OnWorkers(f func(ws []*Worker)) {
+func (p *WorkerPool) Remove(selector func([]*Worker) []int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	f(p.pool)
+
+	toremove := selector(p.pool)
+
+	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
+	var wg sync.WaitGroup
+	wg.Add(len(toremove))
+	for _, i := range toremove {
+		go func() {
+			p.pool[i].Kill(ctx)
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+
+	sort.Sort(sort.Reverse(sort.IntSlice(toremove)))
+	for _, i := range toremove {
+		p.pool = append(p.pool[:i], p.pool[i+1:]...)
+	}
+
+	toremove = selector(p.free)
+	sort.Sort(sort.Reverse(sort.IntSlice(toremove)))
+	for _, i := range toremove {
+		p.free = append(p.free[:i], p.free[i+1:]...)
+	}
+
+	p.schedule()
 }
 
 func (p *WorkerPool) WorkersCopy() []*Worker {
@@ -361,7 +427,7 @@ func (p *WorkerPool) Grow(ws []*Worker) {
 func addFree(dst *[]*Worker, ws []*Worker, maxFailures int) {
 	for _, w := range ws {
 		wst := w.Status()
-		if wst.IsFree() && wst.FailedTasks < maxFailures {
+		if wst.IsFree() && wst.FailedTasks < maxFailures && !wst.Killed {
 			*dst = append(*dst, ws...)
 		}
 	}
@@ -386,11 +452,12 @@ func (p *WorkerPool) submit(t *Task) error {
 //
 // Make sure that p.mu is held before calling this method!
 func (p *WorkerPool) schedule() {
+	p.log.Infof("scheduler: has tasks: %t nworkers: %d", p.queued.next != &p.queued, len(p.free))
 	for p.queued.next != &p.queued && len(p.free) != 0 {
 		t := p.queued.next.t
 		p.queued.next = p.queued.next.next
 		p.queued.prev = &p.queued
-		if t.Status().IsRunning() {
+		if t.Status().IsRunning() || t.Status().Killed {
 			continue
 		}
 		w := p.free[len(p.free)-1]
@@ -399,9 +466,13 @@ func (p *WorkerPool) schedule() {
 			w.Run(t)
 			p.mu.Lock()
 			addFree(&p.free, []*Worker{w}, p.maxWorkerFailures)
+			p.schedule()
 			p.mu.Unlock()
 			st := t.Status()
-			if st.Err != nil && st.Tries < p.maxTaskTries {
+			if st.Err != nil && st.Tries < p.maxTaskTries && !st.Killed {
+				if st.Err != errWorkerKilled {
+					t.Kill(context.Background(), false)
+				}
 				p.Submit(t)
 			}
 		}(w, t)
@@ -446,16 +517,25 @@ func (t *Task) ResetTries() {
 	t.mu.Unlock()
 }
 
-func (t *Task) Clean() error {
+func (t *Task) Kill(ctx context.Context, workerKilled bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	err := exec.Command("tmux", "kill-session", "-t", t.status.Tmux.Session).Run()
-	t.status.Tmux.Session = ""
-	return err
+	session := t.status.Tmux.Session
+	if session != "" {
+		exec.CommandContext(ctx, "tmux", "kill-session", "-t", session).Run()
+	}
+	if workerKilled {
+		t.status.Err = errWorkerKilled
+		t.status.Killed = false
+	} else {
+		t.status.Err = errTaskKilled
+		t.status.Killed = true
+	}
 }
 
 type TaskStatus struct {
 	Done   bool
+	Killed bool
 	Err    error
 	Tries  int
 	Runner *Worker
@@ -479,18 +559,25 @@ func (s TaskStatus) GetOutput() (string, error) {
 }
 
 func (s TaskStatus) IsRunning() bool {
-	return !s.Done && s.Runner != nil
+	return s.Err == nil && !s.Killed && !s.Done && s.Runner != nil
 }
 
 func (s TaskStatus) HumanFriendly(maxTries int) string {
 	if s.Done {
-		return "Ran on " + s.Runner.Name()
+		if s.Err == nil {
+			return "Ran on " + s.Runner.Name()
+		} else {
+			return fmt.Sprintf("Got err: %v, %d fails", s.Err, s.Tries)
+		}
 	}
 	if s.Runner != nil {
 		return "Running on " + s.Runner.Name()
 	}
 	if s.Tries > maxTries {
 		return "Too many failed tries"
+	}
+	if s.Killed {
+		return "Killed"
 	}
 	return fmt.Sprintf("Queued, %d fails", s.Tries)
 }

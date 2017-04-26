@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/uluyol/bernie"
@@ -17,10 +19,14 @@ type Group struct {
 	TasksSet map[string]struct{}
 }
 
-func newGroup(name string, maxFails, maxTries int, initTask *bernie.Task) *Group {
+func (s *bernieServer) newGroup(name string, maxFails, maxTries int, initTask *bernie.Task) *Group {
+	pl := s.log.WithFields(logrus.Fields{
+		"group": name,
+		"elem":  "wpool",
+	})
 	return &Group{
 		Name:     name,
-		Pool:     bernie.NewWorkerPool(maxFails, maxTries, initTask),
+		Pool:     bernie.NewWorkerPool(pl, maxFails, maxTries, initTask),
 		TasksSet: make(map[string]struct{}),
 	}
 }
@@ -50,7 +56,7 @@ func (s *bernieServer) addGroup(group string, init *bernie.Task) bool {
 	if _, ok := s.groups[group]; ok {
 		return false
 	}
-	s.groups[group] = newGroup(group, *maxFails, *maxTries, init)
+	s.groups[group] = s.newGroup(group, *maxFails, *maxTries, init)
 	return true
 }
 
@@ -69,6 +75,43 @@ func (s *bernieServer) addWorkers(group string, manifests []string) error {
 	}
 	g.Pool.Grow(ws)
 	return nil
+}
+
+func (s *bernieServer) rmWorker(group string, name string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	g, ok := s.groups[group]
+	if !ok {
+		return false
+	}
+	g.Pool.Remove(func(ws []*bernie.Worker) []int {
+		var idx []int
+		for i, w := range ws {
+			if w.Name() == name {
+				idx = append(idx, i)
+			}
+		}
+		return idx
+	})
+	return true
+}
+
+func (s *bernieServer) rmTask(group string, name string) error {
+	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, ok := s.groups[group]
+	if !ok {
+		return errGroupNotExist
+	}
+	for i, t := range g.Tasks {
+		if t.Name == name {
+			g.Tasks = append(g.Tasks[:i], g.Tasks[i+1:]...)
+			t.Kill(ctx, false)
+		}
+		delete(g.TasksSet, name)
+	}
+	return ctx.Err()
 }
 
 func (s *bernieServer) addTasks(group string, tasks []*bernie.Task) (succ, fail []*bernie.Task, err error) {

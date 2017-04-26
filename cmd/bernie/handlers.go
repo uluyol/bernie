@@ -105,7 +105,17 @@ func (s *handler) tasksDeleteHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	group := vars["group"]
 	task := vars["task"]
-	panic("not implemented" + group + task)
+	err := s.bernie.rmTask(group, task)
+	switch err {
+	case nil:
+		fmt.Fprintln(w, `{"success": true}`)
+	case errGroupNotExist:
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprintf(w, "{\"success\": false, \"reason\": %q}\n", err.Error())
+	default:
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintln(w, `{"success": false}`)
+	}
 }
 
 func getTask(ts []*bernie.Task, name string) (*bernie.Task, bool) {
@@ -188,9 +198,15 @@ func (s *handler) workersAddHandler(w http.ResponseWriter, r *http.Request) {
 		manifests[i] = reqData.Workers[i].Manifest
 	}
 	err := s.bernie.addWorkers(group, manifests)
+	if err == nil {
+		fmt.Fprintln(w, `{"success": true}`)
+		return
+	}
 	if err != errGroupNotExist {
-		fmt.Fprintf(w, "{\"success\": %t}\n", err == nil)
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintln(w, `{"success": false}`)
 	} else {
+		w.WriteHeader(http.StatusNotFound)
 		fmt.Fprintf(w, "{\"success\": false, \"reason\": %q}\n", err.Error())
 	}
 }
@@ -200,7 +216,12 @@ func (s *handler) workersDeleteHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	group := vars["group"]
 	worker := vars["worker"]
-	panic("not implemented" + group + worker)
+	if !s.bernie.rmWorker(group, worker) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprintln(w, `{"success": false, "reason": "unknown group"}`)
+		return
+	}
+	fmt.Fprintln(w, `{"success": true}`)
 }
 
 func (s *handler) workersPatchHandler(w http.ResponseWriter, r *http.Request) {
