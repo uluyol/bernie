@@ -48,6 +48,7 @@ func main() {
 	r.HandleFunc("/tasks/{group}/add", handler.tasksAddHandler).Methods("POST")
 	r.HandleFunc("/tasks/{group}/{task}", handler.tasksDeleteHandler).Methods("DELETE")
 	r.HandleFunc("/tasks/{group}/{task}", handler.tasksPatchHandler).Methods("PATCH")
+	r.HandleFunc("/tasks/{group}/{task}/manifest", handler.tasksManifestHandler).Methods("GET")
 	r.HandleFunc("/tasks/{group}/{task}/out", handler.tasksOutHandler).Methods("GET")
 	r.HandleFunc("/workers/{group}/add", handler.workersAddHandler).Methods("POST")
 	r.HandleFunc("/workers/{group}/{worker}", handler.workersDeleteHandler).Methods("DELETE")

@@ -31,7 +31,7 @@ const rootTemplStr = `<!doctype html>
     Tasks
     {{- range .Tasks}}
       {{- $pathPre := printf "/tasks/%s/%s" $gname .Name}}
-      <a href="{{$pathPre}}/out"><b>{{.Name}}</b></a> <a href="#" onclick="apiPatch('{{$pathPre}}?status-tries=0')">reset tries</a> [{{.Status.HumanFriendly $maxTries}}] <a href="#" onclick="apiDelete('{{$pathPre}}')">rm</a>
+      <a href="{{$pathPre}}/out"><b>{{.Name}}</b></a> <a href="{{$pathPre}}/manifest">manifest</a> <a href="#" onclick="apiPatch('{{$pathPre}}?status-tries=0')">reset tries</a> [{{.Status.HumanFriendly $maxTries}}] <a href="#" onclick="apiDelete('{{$pathPre}}')">rm</a>
     {{- end}}
     Workers
     {{- range .Pool.WorkersCopy}}

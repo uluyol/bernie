@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -153,6 +154,57 @@ func (s *handler) tasksPatchHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusBadRequest)
 	fmt.Fprintln(w, `{"success": false, "reason": "unknown or unprovided field"}`)
+}
+
+func (s *handler) tasksManifestHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("content-type", "text/plain")
+	vars := mux.Vars(r)
+	group := vars["group"]
+	task := vars["task"]
+	if t, ok := getTask(s.bernie.Tasks(group), task); ok {
+		manifest := struct {
+			Name   string   `json:"name"`
+			Cmd    []string `json:"cmd"`
+			Env    []string `json:"env"`
+			WD     string   `json:"wd"`
+			Status struct {
+				Tmux struct {
+					Session string `json:"session"`
+				} `json:"tmux"`
+			} `json:"status"`
+		}{
+			Name: t.Name,
+			Cmd:  t.Cmd,
+			Env:  t.Env,
+			WD:   t.WD,
+		}
+		manifest.Status.Tmux.Session = t.Status().Tmux.Session
+		b, err := json.Marshal(&manifest)
+		if err != nil {
+			s.log.WithFields(logrus.Fields{
+				"err":  err,
+				"path": r.URL.Path,
+			}).Error("unable to encode task manifest")
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintln(w, "unable to encode task manifest")
+			return
+		}
+		var buf bytes.Buffer
+		if err := json.Indent(&buf, b, "", "  "); err != nil {
+			s.log.WithFields(logrus.Fields{
+				"err":  err,
+				"path": r.URL.Path,
+			}).Error("unable to indent json")
+			buf.Reset()
+			buf.Write(b)
+		}
+		buf.WriteByte('\n')
+		w.Header().Add("content-type", "application/json")
+		buf.WriteTo(w)
+		return
+	}
+	w.WriteHeader(http.StatusNotFound)
+	fmt.Fprintln(w, "unknown group or task")
 }
 
 func (s *handler) tasksOutHandler(w http.ResponseWriter, r *http.Request) {
