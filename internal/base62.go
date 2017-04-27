@@ -1,6 +1,6 @@
-package bernie
+package internal
 
-func base62(n int32) string {
+func Base62(n int32) string {
 	const base = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 	res := make([]byte, 0, 6)
 	for n >= 62 {

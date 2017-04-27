@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/uluyol/bernie/internal"
 )
 
 var rng = struct {
@@ -176,7 +178,7 @@ func (w *Worker) Run(t *Task) {
 	}
 	w.log.Debugf("worker dir is: %s", wdir)
 
-	session := "bernie-task+" + base62(randInt32())
+	session := "bernie-task+" + internal.Base62(randInt32())
 	cmd := exec.Command("tmux",
 		"new-session", "-d", "-s", session, filepath.Join(wdir, "do.sh"), ";",
 		"set", "remain-on-exit", "on")
