@@ -5,7 +5,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"strconv"
 
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
@@ -13,7 +12,7 @@ import (
 
 var (
 	debug    = flag.Bool("debug", false, "should enable debugging logs")
-	port     = flag.Int("port", 0, "port to serve on")
+	addr     = flag.String("addr", ":8080", "addr to serve on (port 0 auto-assigns a port)")
 	maxTries = flag.Int("maxtries", 4, "max allowable tries for a task")
 	maxFails = flag.Int("maxfailures", 3, "max allowed failures on worker")
 )
@@ -55,9 +54,9 @@ func main() {
 	r.HandleFunc("/workers/{group}/{worker}", handler.workersPatchHandler).Methods("PATCH")
 	r.HandleFunc("/workers/{group}/{worker}/manifest", handler.workersManifestHandler).Methods("GET")
 	r.HandleFunc("/workers/{group}/{worker}/initout", handler.workersInitOutHandler).Methods("GET")
-	l, err := net.Listen("tcp", ":"+strconv.Itoa(*port))
+	l, err := net.Listen("tcp", *addr)
 	if err != nil {
-		logger.Fatalf("failed to listen on port %d: %v", *port, err)
+		logger.Fatalf("failed to listen on %s: %v", *addr, err)
 	}
 	defer l.Close()
 	logger.Infof("listening on %s", l.Addr())
